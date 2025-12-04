@@ -17,7 +17,7 @@ During the initial exploration of the transactions table, I identified rows with
 2. **Revenue is dependent on product_id**
   - Revenue can only be calculated if there is an associated product_id as the base_price is only included in the product table
 
-**Conclusion**
+**Conclusion:**
 I chose to include these rows to account for all transactions and ensure completeness of the dataset. I handled the missing data by filling them in with default values. Null values in product_id and gross_revenue are now shown as 0.
 
 ## Entity Relation Diagram
