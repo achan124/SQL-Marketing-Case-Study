@@ -13,9 +13,9 @@ During the initial exploration of the transactions table, I identified rows with
 
 **Possible Explanation**
 1. **Deleted or missing product reference**
-  The product may not be sold anymore and has been deleted in the products table, but the transaction was not updated.
-2. **Revenue is dependent on product_id**
-  Revenue can only be calculated if there is an associated product_id as the base_price is only included in the product table
+  - The product may not be sold anymore and has been deleted in the products table, but the transaction was not updated.
+3. **Revenue is dependent on product_id**
+  - Revenue can only be calculated if there is an associated product_id as the base_price is only included in the product table
 **Conclusion**
 I chose to include these rows to account for all transactions and ensure completeness of the dataset. I handled the missing data by filling them in with default values. Null values in product_id and gross_revenue are now shown as 0.
 
@@ -36,4 +36,21 @@ I chose to include these rows to account for all transactions and ensure complet
 - Transactions
   - Contains information about purchase transactions
   - Primary key transaction_id, with foreign keys to customers, products, and campaigns
- 
+
+<img width="2100" height="1322" alt="ERD" src="https://github.com/user-attachments/assets/1437da6d-bc92-440d-b35e-44271d8091ca" />
+
+## Exploratory Analysis
+### Product Insights
+1. Top selling products by revenue
+2. Revenue by category or brand
+3. Product performance trend (revenue per product over time)
+
+### Marketing Insights
+1. Total revenue generated per campaign
+2. Average order value per campaign
+3. Number of customers per aquisition channel
+4. Revenue per accquition channel
+5. Repeat purchases per aquisition channel
+6. Count of users at each stage of funnel
+7. Drop-off rate between user journey stages
+
