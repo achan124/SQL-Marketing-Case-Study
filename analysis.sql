@@ -4,7 +4,6 @@
 -- =================================================================
 
 
-
 --------------------------------------------------------------------
 -- DATA CLEANING
 --------------------------------------------------------------------
@@ -20,62 +19,49 @@ SET gross_revenue = 0
 WHERE gross_revenue IS NULL;
 
 
-
 --------------------------------------------------------------------
 -- EXPLORATORY ANALYSIS
 --------------------------------------------------------------------
 
--- ==================================
--- PRODUCT INSIGHTS:
--- ==================================
-
--- Top 10 selling products by revenue
-SELECT TOP 10 product_id, ROUND(SUM(gross_revenue), 2) AS total_revenue
-FROM transactions
-GROUP BY product_id
-ORDER BY total_revenue DESC;
-
--- Revenue by category or brand
-SELECT p.category, ROUND(SUM(t.gross_revenue), 2) AS total_revenue
-FROM products p
-JOIN transactions t
-    ON p.product_id = t.product_id
-GROUP BY p.category
-ORDER BY total_revenue DESC;
-
--- Product performance trend (revenue per product over time)
-SELECT p.product_id, MONTH(t.timestamp) AS month, ROUND(SUM(t.gross_revenue), 2) AS total_revenue
-FROM products p
-JOIN transactions t 
-    ON p.product_id = t.product_id
-GROUP BY p.product_id, MONTH(t.timestamp)
-ORDER BY p.product_id, month;
-
--- ==================================
--- MARKETING INSIGHTS:
--- ==================================
-
--- Total revenue generated per campaign
-SELECT c.campaign_id, ROUND(SUM(t.gross_revenue), 2) AS total_revenue
+-- 1. Total revenue generated per campaign
+SELECT c.campaign_id, c.channel, ROUND(SUM(t.gross_revenue), 2) AS total_revenue
 FROM campaigns c
 JOIN transactions t 
     ON c.campaign_id = t.campaign_id
-GROUP BY c.campaign_id
+GROUP BY c.campaign_id, c.channel
 ORDER BY total_revenue DESC;
 
--- Average order value per campaign
+-- 2. Which campaigns drive the highest conversion rate?
+-- -- aka how many made purchases out of all who were exposed 
+WITH exposures AS (
+    SELECT campaign_id, COUNT(DISTINCT customer_id) AS customer_exposures
+    FROM events
+    GROUP BY campaign_id
+), purchases AS (
+    SELECT campaign_id, COUNT(DISTINCT customer_id) AS customer_transactions
+    FROM transactions
+    WHERE refund_flag != 0
+    GROUP BY campaign_id
+)
+SELECT 
+    c.campaign_id, 
+    e.customer_exposures, 
+    p.customer_transactions, 
+    (p.customer_transactions * 1.0 / e.customer_exposures) AS conversion_rate
+FROM campaigns c
+LEFT JOIN exposures e
+    ON c.campaign_id = e.campaign_id
+LEFT JOIN purchases p 
+    ON p.campaign_id = c.campaign_id
+ORDER BY conversion_rate DESC;
+
+-- 3. Average order value per campaign
 SELECT campaign_id, ROUND(AVG(gross_revenue), 2) AS average_order_value
 FROM transactions
 GROUP BY campaign_id
 ORDER BY  average_order_value DESC;
 
--- Number of customers per aquisition channel
-SELECT COUNT(customer_id) as number_of_customers, acquisition_channel
-FROM customers
-GROUP BY acquisition_channel
-ORDER BY number_of_customers DESC;
-
--- Revenue per acquisition channel
+-- 4. Revenue per acquisition channel
 SELECT c.acquisition_channel, ROUND(SUM(t.gross_revenue), 2) AS total_revenue
 FROM customers c 
 JOIN transactions t 
@@ -83,7 +69,7 @@ JOIN transactions t
 GROUP BY c.acquisition_channel
 ORDER BY total_revenue DESC;
 
--- Repeat customers per acquisition channel
+-- 5. Repeat customers per acquisition channel
 WITH customer_purchases AS (
     SELECT customer_id, COUNT(*) AS num_purchases
     FROM transactions
@@ -96,53 +82,138 @@ JOIN customers c
 WHERE cp.num_purchases > 1
 GROUP BY c.acquisition_channel;
 
--- Count of users at each stage of funnel
-SELECT event_type, COUNT(DISTINCT customer_id) as user_count
-FROM events
-GROUP BY event_type;
-
-
-
---------------------------------------------------------------------
--- USER JOURNEY DROPOFF VIEW
---------------------------------------------------------------------
-
-GO
--- View: user_journey
--- Shows dropoff rate between each stage of the user journey
--- Stage order: view -> click -> add_to_cart -> purchase
--- 'bounce' events excluded
-
-CREATE VIEW user_journey AS
+-- 6. Campaigns that drive the highest % of returning customers
+-- -- AKA For each campaign, what % of customers made another transaction within 60 days?
+WITH first_purchase AS (
+    SELECT t.customer_id, t.campaign_id, MIN(t.timestamp) AS first_purchase_time
+    FROM transactions t
+    GROUP BY t.customer_id, t.campaign_id
+), repeat_purchases AS (
+    SELECT fp.campaign_id, fp.customer_id
+    FROM first_purchase fp
+    JOIN transactions t 
+        ON fp.customer_id = t.customer_id
+        AND t.timestamp > fp.first_purchase_time
+        AND t.timestamp <= DATEADD(DAY, 60, fp.first_purchase_time)
+)
 SELECT 
-    first.event_type AS first_stage,
-    second.event_type AS second_stage,
-    first.user_count AS first_stage_user_count,
-    second.user_count AS second_stage_user_count,
-    first.user_count - second.user_count AS dropoff_count,
-    ROUND(CAST(first.user_count - second.user_count AS float) / first.user_count, 3) AS dropoff_rate
-FROM (
-    SELECT event_type, COUNT(DISTINCT customer_id) AS user_count
-    FROM events
-    WHERE event_type != 'bounce'
-    GROUP BY event_type
-) first
-LEFT JOIN (
-    SELECT event_type, COUNT(DISTINCT customer_id) AS user_count
-    FROM events
-    WHERE event_type != 'bounce'
-    GROUP BY event_type
-) second
-    ON (first.event_type = 'view' AND second.event_type = 'click')
-    OR (first.event_type = 'click' AND second.event_type = 'add_to_cart')
-    OR (first.event_type = 'add_to_cart' AND second.event_type = 'purchase');
+    c.campaign_id,
+    COUNT(DISTINCT fp.customer_id) AS customers,
+    COUNT(DISTINCT rp.customer_id) AS repeat_customers,
+    ROUND(
+        CASE 
+            WHEN COUNT(DISTINCT fp.customer_id) = 0 THEN 0
+            ELSE 1.0 * COUNT(DISTINCT rp.customer_id) / COUNT(DISTINCT fp.customer_id)
+        END, 4
+    ) AS percent_returning_customers
+FROM campaigns c 
+LEFT JOIN first_purchase fp 
+    ON c.campaign_id = fp.campaign_id
+LEFT JOIN repeat_purchases rp 
+    ON fp.customer_id = rp.customer_id
+    AND fp.campaign_id = rp.campaign_id
+GROUP BY c.campaign_id
+ORDER BY percent_returning_customers DESC;
 
--- Example usage:
--- SELECT * 
--- FROM user_journey
--- ORDER BY CASE first_stage
---         WHEN 'view' THEN 1
---         WHEN 'click' THEN 2
---         WHEN 'add_to_cart' THEN 3
---         WHEN 'purchase' THEN 4
---     END
+-- 7. How much revenue is generated by each age group per campaign?
+WITH age_groups AS (
+    SELECT customer_id,
+        CASE 
+            WHEN age BETWEEN 18 AND 24 THEN '18-24'
+            WHEN age BETWEEN 25 AND 40 THEN '25-40'
+            WHEN age BETWEEN 41 AND 60 THEN '41-60'
+            ELSE '65+'
+        END AS age_group
+    FROM customers
+), campaign_revenue AS (
+    SELECT t.campaign_id, a.age_group, ROUND(SUM(t.gross_revenue), 2) AS total_revenue
+    FROM transactions t 
+    JOIN age_groups a 
+        ON t.customer_id = a.customer_id
+    GROUP BY t.campaign_id, a.age_group
+)
+SELECT campaign_id, age_group, total_revenue
+FROM campaign_revenue
+ORDER BY campaign_id, age_group;
+
+-- 8. Comparing expected_uplift vs actual conversions per campaign
+WITH campaign_exposure AS (
+    SELECT campaign_id, COUNT(DISTINCT customer_id) AS customers_exposed
+    FROM events
+    GROUP BY campaign_id
+), campaign_conversions AS (
+    SELECT campaign_id, COUNT(DISTINCT customer_id) AS customers_converted
+    FROM transactions
+    GROUP BY campaign_id
+), actual_performance AS (
+    SELECT 
+        ce.campaign_id,  
+        ce.customers_exposed, 
+        cc.customers_converted,
+        CASE 
+            WHEN ce.customers_exposed = 0 THEN 0
+            ELSE 1.0 * cc.customers_converted / ce.customers_exposed
+        END AS actual_conversion_rate
+    FROM campaign_exposure ce
+    LEFT JOIN campaign_conversions cc 
+        ON ce.campaign_id = cc.campaign_id
+)
+SELECT 
+    c.campaign_id, 
+    c.expected_uplift, 
+    p.actual_conversion_rate, 
+    (p.actual_conversion_rate - c.expected_uplift) AS uplift_gap,
+    CASE 
+        WHEN p.actual_conversion_rate < c.expected_uplift THEN 'UNDERPERFORMING'
+        WHEN p.actual_conversion_rate = c.expected_uplift THEN 'ON TARGET'
+        ELSE 'OVERPERFORMING'
+    END AS performance_status
+FROM campaigns c 
+LEFT JOIN actual_performance p 
+    ON c.campaign_id = p.campaign_id
+ORDER BY c.campaign_id
+
+
+-- --------------------------------------------------------------------
+-- -- USER JOURNEY DROPOFF VIEW
+-- --------------------------------------------------------------------
+
+-- GO
+-- -- View: user_journey
+-- -- Shows dropoff rate between each stage of the user journey
+-- -- Stage order: view -> click -> add_to_cart -> purchase
+-- -- 'bounce' events excluded
+
+-- CREATE OR REPLACE VIEW user_journey AS
+-- SELECT 
+--     first.event_type AS first_stage,
+--     second.event_type AS second_stage,
+--     first.user_count AS first_stage_user_count,
+--     second.user_count AS second_stage_user_count,
+--     first.user_count - second.user_count AS dropoff_count,
+--     ROUND(CAST(first.user_count - second.user_count AS float) / first.user_count, 3) AS dropoff_rate
+-- FROM (
+--     SELECT event_type, COUNT(DISTINCT customer_id) AS user_count
+--     FROM events
+--     WHERE event_type != 'bounce'
+--     GROUP BY event_type
+-- ) first
+-- LEFT JOIN (
+--     SELECT event_type, COUNT(DISTINCT customer_id) AS user_count
+--     FROM events
+--     WHERE event_type != 'bounce'
+--     GROUP BY event_type
+-- ) second
+--     ON (first.event_type = 'view' AND second.event_type = 'click')
+--     OR (first.event_type = 'click' AND second.event_type = 'add_to_cart')
+--     OR (first.event_type = 'add_to_cart' AND second.event_type = 'purchase');
+
+-- -- Example usage:
+SELECT * 
+FROM user_journey
+ORDER BY CASE first_stage
+        WHEN 'view' THEN 1
+        WHEN 'click' THEN 2
+        WHEN 'add_to_cart' THEN 3
+        WHEN 'purchase' THEN 4
+    END
